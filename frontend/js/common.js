@@ -17,6 +17,7 @@
     { key: "ast",         href: "ast.html",         icon: "🌳", title: "AST 语法树可视化", group: "编译前端" },
     { key: "symbols",     href: "symbols.html",     icon: "🏷️", title: "符号表与作用域",  group: "编译前端" },
     { key: "bytecode",    href: "bytecode.html",    icon: "🧩", title: "字节码 / 中间代码", group: "编译前端" },
+    { key: "transpile",   href: "transpile.html",   icon: "🐍", title: "MiniLang → Python", group: "编译前端" },
     { key: "debug",       href: "debug.html",       icon: "🐞", title: "执行跟踪与单步调试", group: "运行调试" },
     { key: "callstack",   href: "callstack.html",   icon: "📚", title: "调用栈与变量监视", group: "运行调试" },
     { key: "memory",      href: "memory.html",      icon: "🧠", title: "内存模型可视化",  group: "运行调试" },
@@ -142,6 +143,7 @@
     // ---- 编译 / 运行 ----
     compile(source, detail) { return this.post("/api/compile", { source, detail: detail || "all" }); },
     run(source, options) { return this.post("/api/run", { source, options: options || {} }); },
+    transpile(source) { return this.post("/api/transpile", { source }); },
 
     // ---- 调试 ----
     debugStart(source, breakpoints, pid, vid) { return this.post("/api/debug/start", { source, breakpoints: breakpoints || [], project_id: pid, version_id: vid }); },

@@ -157,6 +157,9 @@ class Handler(BaseHTTPRequestHandler):
                 opts["sample_interval_ms"] = int(opts["sample_interval_ms"])
             out = svc.run(body.get("source", ""), opts)
             return self._json(200, {"ok": True, "result": out})
+        if path == "/api/transpile" and method == "POST":
+            out = svc.transpile(body.get("source", ""))
+            return self._json(200, {"ok": out.get("ok", False), "result": out})
 
         # ---- 调试 ----
         if path == "/api/debug/start" and method == "POST":

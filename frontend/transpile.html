@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MiniLang 转 Python · MiniLang 平台</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="main">
+    <header class="topbar" id="topbar"></header>
+    <div class="content">
+      <div class="flex wrap between mb">
+        <div>
+          <h1 style="font-size:18px;font-weight:650">MiniLang → Python 代码转译</h1>
+          <div class="muted" style="font-size:12.5px">复用词法、语法、语义分析与符号绑定结果；仅当源程序无错误时生成可直接运行的 Python 代码</div>
+        </div>
+        <div class="flex wrap" style="gap:8px">
+          <select id="sample" title="载入示例代码"></select>
+          <button class="btn sm" id="btn-loadproj">📂 载入项目源码</button>
+          <button class="btn primary" id="btn-transpile">🐍 转译为 Python</button>
+        </div>
+      </div>
+
+      <div class="grid cols-2 transpile-grid">
+        <div class="card" style="margin-bottom:0">
+          <h2>📝 MiniLang 源码</h2>
+          <div id="editor"></div>
+        </div>
+        <div class="card" style="margin-bottom:0">
+          <div class="flex between" style="align-items:flex-start;margin-bottom:12px">
+            <h2 style="margin-bottom:0">🐍 Python 产物</h2>
+            <div class="flex" style="gap:6px">
+              <button class="btn sm" id="btn-copy" disabled>📋 复制</button>
+              <button class="btn sm" id="btn-download" disabled>💾 下载 .py</button>
+            </div>
+          </div>
+          <pre class="code-output" id="output"><span class="muted">点击「转译为 Python」后在此查看生成结果。</span></pre>
+        </div>
+      </div>
+
+      <div id="status" class="flex wrap mt" style="gap:8px;min-height:26px"></div>
+      <div class="card mt" id="diag-card">
+        <h2>🩺 编译前端诊断</h2>
+        <div id="diags"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="js/common.js"></script>
+<script src="js/editor.js"></script>
+<script>
+(function () {
+  ML.Shell.render("transpile");
+  ML.Shell.setTitle("MiniLang → Python 代码转译");
+
+  let generatedPython = "";
+  const $ = (id) => document.getElementById(id);
+
+  const editor = new ML.CodeEditor($("editor"), {
+    value: ML.store.get("transpile_source", ML.DEFAULT_CODE),
+    height: 520,
+    autocomplete: true,
+    onValueChange: ML.debounce((v) => ML.store.set("transpile_source", v), 400),
+  });
+
+  const sampleSel = $("sample");
+  sampleSel.innerHTML = '<option value="">— 载入示例 —</option>' +
+    ML.SAMPLES.map((s, i) => `<option value="${i}">${ML.escapeHtml(s.name)}</option>`).join("");
+  sampleSel.onchange = () => {
+    if (sampleSel.value === "") return;
+    editor.setValue(ML.SAMPLES[parseInt(sampleSel.value, 10)].code);
+    sampleSel.value = "";
+    resetOutput("已载入示例，点击「转译为 Python」生成代码。");
+  };
+
+  $("btn-loadproj").onclick = async () => {
+    const source = await ML.Shell.loadSource(ML.DEFAULT_CODE);
+    editor.setValue(source);
+    ML.toast(ML.Shell.getProjectId() ? "已载入项目源码" : "未选择项目，已载入示例代码");
+    resetOutput("已载入源码，点击「转译为 Python」生成代码。");
+  };
+
+  function resetOutput(message) {
+    generatedPython = "";
+    $("btn-copy").disabled = true;
+    $("btn-download").disabled = true;
+    $("output").innerHTML = `<span class="muted">${ML.escapeHtml(message)}</span>`;
+    $("status").innerHTML = "";
+    $("diags").innerHTML = ML.empty("等待转译");
+  }
+
+  async function doTranspile() {
+    const source = editor.getValue();
+    const status = $("status");
+    const output = $("output");
+    status.innerHTML = ML.badge("正在经过编译前端检查…", "blue");
+    const data = await ML.api.transpile(source);
+    const result = data.result || {};
+    const diagnostics = result.diagnostics || [];
+    $("diags").innerHTML = ML.renderDiagnostics(diagnostics, source);
+
+    if (!data.ok || !result.ok || !result.python_code) {
+      generatedPython = "";
+      $("btn-copy").disabled = true;
+      $("btn-download").disabled = true;
+      output.innerHTML = '<span class="ln-err">存在词法、语法或语义错误，未生成 Python 代码。请先根据诊断修复源码。</span>';
+      status.innerHTML =
+        ML.badge("转译失败", "red") +
+        ML.badge("停止阶段：" + (result.stage || "unknown"), "gray") +
+        ML.badge("错误：" + diagnostics.filter((d) => d.severity === "error").length, "red");
+      return;
+    }
+
+    generatedPython = result.python_code;
+    $("btn-copy").disabled = false;
+    $("btn-download").disabled = false;
+    output.textContent = generatedPython;
+    const warnings = diagnostics.filter((d) => d.severity === "warning").length;
+    status.innerHTML =
+      ML.badge("转译成功", "green") +
+      ML.badge("前端阶段：" + result.stage, "gray") +
+      ML.badge("Python 行数：" + generatedPython.split("\n").length, "cyan") +
+      ML.badge("警告：" + warnings, warnings ? "amber" : "gray");
+  }
+
+  $("btn-transpile").onclick = doTranspile;
+
+  $("btn-copy").onclick = async () => {
+    if (!generatedPython) return;
+    try {
+      await navigator.clipboard.writeText(generatedPython);
+      ML.toast("Python 代码已复制", "ok");
+    } catch (e) {
+      const box = document.createElement("textarea");
+      box.value = generatedPython;
+      document.body.appendChild(box);
+      box.select();
+      document.execCommand("copy");
+      box.remove();
+      ML.toast("Python 代码已复制", "ok");
+    }
+  };
+
+  $("btn-download").onclick = () => {
+    if (!generatedPython) return;
+    const blob = new Blob([generatedPython], { type: "text/x-python;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "minilang_transpiled.py";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  $("diags").innerHTML = ML.empty("等待转译");
+})();
+</script>
+</body>
+</html>

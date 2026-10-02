@@ -234,6 +234,9 @@ class SemanticAnalyzer:
     def _expr(self, e) -> str:
         if e is None:
             return sym.TYPE_UNKNOWN
+        if isinstance(e, ast.AssignStmt):
+            self._assign(e)
+            return getattr(e, "expr_type", sym.TYPE_UNKNOWN)
         if isinstance(e, ast.NumberLiteral):
             e.expr_type = e.kind
             return e.expr_type

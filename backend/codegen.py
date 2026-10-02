@@ -104,7 +104,8 @@ class CodeGenerator:
             if s.initializer:
                 self._expr(s.initializer)
             else:
-                self._emit(bc.OP_LOAD_CONST, None, s.line)
+                idx = self.current.add_const(None)
+                self._emit(bc.OP_LOAD_CONST, idx, s.line)
             self._store_name(s.name, s.line)
         elif isinstance(s, ast.AssignStmt):
             self._assign(s)
@@ -176,7 +177,8 @@ class CodeGenerator:
         if s.condition:
             self._expr(s.condition)
         else:
-            self._emit(bc.OP_LOAD_CONST, True, s.line)
+            idx = self.current.add_const(True)
+            self._emit(bc.OP_LOAD_CONST, idx, s.line)
         jump_false = self._emit(bc.OP_JUMP_IF_FALSE, 0, s.line)
         self._stmt(s.body)
         continue_target = self._here()

@@ -27,6 +27,7 @@ from . import debugger as debugger_mod
 from . import profiler as profiler_mod
 from . import diagnostics as diag
 from . import memory_model
+from . import transpiler as transpiler_mod
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +249,45 @@ class Service:
             view["bytecode"] = result.bytecode.to_dict()
             view["bytecode"]["functions"].reverse()
         return view
+
+    def transpile(self, source):
+        """复用编译前端的 AST 与符号分析结果，将 MiniLang 转译为 Python。"""
+        result = compiler_mod.compile_source(source)
+        if not result.success:
+            return {
+                "ok": False,
+                "diagnostics": result.diagnostics.to_list(),
+                "stage": result.stage,
+                "python_code": "",
+            }
+        try:
+            python_code = transpiler_mod.transpile(result)
+        except transpiler_mod.TranspileError as exc:
+            diagnostic = exc.diagnostic or {
+                "severity": "error",
+                "phase": "semantic",
+                "kind": "syntax",
+                "message": f"Python 转译失败：{exc}",
+                "line": 1,
+                "column": 1,
+                "length": 1,
+                "fix": "请检查源码结构；只有通过完整编译前端检查的程序才能转译。",
+            }
+            lines = source.split("\n")
+            if 0 < diagnostic.get("line", 0) <= len(lines):
+                diagnostic["source_line"] = lines[diagnostic["line"] - 1]
+            return {
+                "ok": False,
+                "diagnostics": [diagnostic],
+                "stage": result.stage,
+                "python_code": "",
+            }
+        return {
+            "ok": True,
+            "diagnostics": result.diagnostics.to_list(),
+            "stage": result.stage,
+            "python_code": python_code,
+        }
 
     # ==================================================================
     # 运行（普通 / 性能剖析）
