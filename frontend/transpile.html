@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MiniLang → Python 转译 · MiniLang 平台</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="main">
+    <header class="topbar" id="topbar"></header>
+    <div class="content">
+      <div class="flex wrap between mb">
+        <div class="flex wrap" style="gap:8px">
+          <select id="sample" title="载入示例代码"></select>
+          <button class="btn sm" id="btn-loadproj">📂 载入项目源码</button>
+        </div>
+        <div class="flex wrap" style="gap:8px">
+          <button class="btn sm" id="btn-copy" disabled>📋 复制 Python</button>
+          <button class="btn sm" id="btn-download" disabled>⬇️ 下载 .py</button>
+          <button class="btn primary" id="btn-transpile">🐍 转译为 Python</button>
+        </div>
+      </div>
+
+      <div class="grid cols-2 trans-grid">
+        <div>
+          <div class="pane-head">
+            <span class="dot-lang ml">ML</span>
+            <span class="pane-title">MiniLang 源码</span>
+          </div>
+          <div id="editor"></div>
+        </div>
+        <div>
+          <div class="pane-head">
+            <span class="dot-lang py">Py</span>
+            <span class="pane-title">等价 Python（可直接运行）</span>
+          </div>
+          <pre class="code-out" id="pyout"><span class="muted">点击右上角「转译为 Python」，这里会展示语义等价、可直接用 python3 运行的代码。</span></pre>
+        </div>
+      </div>
+
+      <div id="status" class="flex wrap mt" style="gap:8px;min-height:26px"></div>
+
+      <div class="card mt" id="diag-card" style="display:none">
+        <h2>🩺 诊断信息</h2>
+        <div class="desc">词法 / 语法 / 语义阶段存在错误，已停止转译且不会生成错误的目标代码。修复下列问题后再点击「转译」。</div>
+        <div id="diags"></div>
+      </div>
+
+      <div class="card mt" id="warn-card" style="display:none">
+        <h2>⚠️ 警告（不影响转译）</h2>
+        <div id="warns"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="js/common.js"></script>
+<script src="js/editor.js"></script>
+<script>
+(function () {
+  ML.Shell.render("transpile");
+  ML.Shell.setTitle("MiniLang → Python 转译");
+
+  let lastPython = "";
+
+  const editor = new ML.CodeEditor(document.getElementById("editor"), {
+    value: ML.store.get("transpile_source", ML.DEFAULT_CODE),
+    height: 460,
+    autocomplete: true,
+    onValueChange: ML.debounce((v) => ML.store.set("transpile_source", v), 400),
+  });
+
+  /* 示例下拉 */
+  const sampleSel = document.getElementById("sample");
+  sampleSel.innerHTML = '<option value="">— 载入示例 —</option>' +
+    ML.SAMPLES.map((s, i) => `<option value="${i}">${ML.escapeHtml(s.name)}</option>`).join("");
+  sampleSel.onchange = () => {
+    if (sampleSel.value === "") return;
+    editor.setValue(ML.SAMPLES[parseInt(sampleSel.value, 10)].code);
+    sampleSel.value = "";
+    resetOutput();
+  };
+  document.getElementById("btn-loadproj").onclick = async () => {
+    editor.setValue(await ML.Shell.loadSource(ML.DEFAULT_CODE));
+    resetOutput();
+  };
+
+  const pyEl = document.getElementById("pyout");
+  const statusEl = document.getElementById("status");
+
+  function resetOutput() {
+    lastPython = "";
+    pyEl.innerHTML = '<span class="muted">点击右上角「转译为 Python」，这里会展示语义等价、可直接用 python3 运行的代码。</span>';
+    document.getElementById("btn-copy").disabled = true;
+    document.getElementById("btn-download").disabled = true;
+    statusEl.innerHTML = "";
+    document.getElementById("diag-card").style.display = "none";
+    document.getElementById("warn-card").style.display = "none";
+  }
+
+  /* 极简 Python 着色：注释 / 字符串 / 关键字 / 数字 */
+  function highlightPython(code) {
+    const esc = ML.escapeHtml;
+    const kw = new Set(["def", "return", "if", "elif", "else", "while", "for", "in", "break",
+      "continue", "global", "import", "as", "None", "True", "False", "not", "and", "or", "lambda", "pass"]);
+    let out = "";
+    let i = 0;
+    const n = code.length;
+    const isIdStart = (c) => /[A-Za-z_]/.test(c);
+    const isId = (c) => /[A-Za-z0-9_]/.test(c);
+    while (i < n) {
+      const ch = code[i];
+      if (ch === "#") {
+        let j = i; while (j < n && code[j] !== "\n") j++;
+        out += '<span class="tk-com">' + esc(code.slice(i, j)) + "</span>"; i = j; continue;
+      }
+      if (ch === '"' || ch === "'") {
+        const q = ch; let j = i + 1;
+        while (j < n && code[j] !== q) { if (code[j] === "\\") j++; j++; }
+        j = Math.min(n, j + 1);
+        out += '<span class="tk-str">' + esc(code.slice(i, j)) + "</span>"; i = j; continue;
+      }
+      if (isIdStart(ch)) {
+        let j = i; while (j < n && isId(code[j])) j++;
+        const w = code.slice(i, j);
+        out += kw.has(w) ? '<span class="tk-kw">' + w + "</span>"
+          : (/^ml_|^_ml/.test(w) ? '<span class="tk-bi">' + esc(w) + "</span>" : esc(w));
+        i = j; continue;
+      }
+      if (/[0-9]/.test(ch)) {
+        const m = code.slice(i).match(/^\d+(\.\d+)?/);
+        if (m) { out += '<span class="tk-num">' + m[0] + "</span>"; i += m[0].length; continue; }
+      }
+      out += esc(ch); i++;
+    }
+    return out;
+  }
+
+  async function doTranspile() {
+    const source = editor.getValue();
+    statusEl.innerHTML = ML.badge("转译中…", "gray");
+    let data;
+    try {
+      data = await ML.api.transpile(source);
+    } catch (e) {
+      statusEl.innerHTML = ML.badge("网络错误，转译失败", "red");
+      return;
+    }
+    const r = data.result || {};
+    const errors = (r.diagnostics || []).filter((d) => d.severity === "error");
+    const warnings = (r.diagnostics || []).filter((d) => d.severity === "warning");
+
+    if (!r.ok || errors.length) {
+      // 有错误：明确提示，绝不展示错误的目标代码
+      lastPython = "";
+      pyEl.innerHTML = '<span class="muted">源码存在错误，未生成 Python 代码。请先修复下方诊断。</span>';
+      document.getElementById("btn-copy").disabled = true;
+      document.getElementById("btn-download").disabled = true;
+      statusEl.innerHTML =
+        ML.badge("转译失败", "red") +
+        ML.badge("错误 " + errors.length, "red") +
+        ML.badge("阶段：" + (r.stage || "—"), "gray");
+      const diagCard = document.getElementById("diag-card");
+      diagCard.style.display = "";
+      document.getElementById("diags").innerHTML = ML.renderDiagnostics(errors, source);
+      document.getElementById("warn-card").style.display = warnings.length ? "" : "none";
+      document.getElementById("warns").innerHTML = ML.renderDiagnostics(warnings, source);
+      return;
+    }
+
+    lastPython = r.python || "";
+    pyEl.innerHTML = highlightPython(lastPython);
+    document.getElementById("btn-copy").disabled = false;
+    document.getElementById("btn-download").disabled = false;
+    const lineCount = lastPython ? lastPython.split("\n").length : 0;
+    statusEl.innerHTML =
+      ML.badge("转译成功", "green") +
+      ML.badge("Python 行数 " + lineCount, "blue") +
+      (warnings.length ? ML.badge("警告 " + warnings.length + "（不影响转译）", "amber") : ML.badge("无警告", "green")) +
+      ML.badge("复用 词法/语法/语义 前端结果", "purple");
+    document.getElementById("diag-card").style.display = "none";
+    const warnCard = document.getElementById("warn-card");
+    if (warnings.length) {
+      warnCard.style.display = "";
+      document.getElementById("warns").innerHTML = ML.renderDiagnostics(warnings, source);
+    } else {
+      warnCard.style.display = "none";
+    }
+    ML.toast("转译成功，Python 代码可直接运行", "ok");
+  }
+
+  document.getElementById("btn-transpile").onclick = doTranspile;
+
+  /* 复制 */
+  document.getElementById("btn-copy").onclick = async () => {
+    if (!lastPython) return;
+    try {
+      await navigator.clipboard.writeText(lastPython);
+      ML.toast("已复制 Python 代码", "ok");
+    } catch (e) {
+      const ta = document.createElement("textarea");
+      ta.value = lastPython; document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); document.body.removeChild(ta);
+      ML.toast("已复制 Python 代码", "ok");
+    }
+  };
+
+  /* 下载 */
+  document.getElementById("btn-download").onclick = () => {
+    if (!lastPython) return;
+    const blob = new Blob([lastPython], { type: "text/x-python;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "transpiled.py";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  /* 快捷键 Ctrl/Cmd+Enter 触发转译 */
+  editor.ta.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      doTranspile();
+    }
+  });
+})();
+</script>
+</body>
+</html>

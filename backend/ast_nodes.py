@@ -45,10 +45,10 @@ class NumberLiteral(Expr):
         super().__init__(line, column)
         self.value = value
         # 根据是否含小数点/科学计数法区分 int / float
-        if isinstance(value, int):
+        if isinstance(value, float):
             self.kind = "float"
-        elif isinstance(value, float):
-            self.kind = "float"
+        elif isinstance(value, int):
+            self.kind = "int"
         else:
             self.kind = "float" if ("." in str(value) or "e" in str(value).lower()) else "int"
 

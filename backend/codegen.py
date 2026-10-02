@@ -20,12 +20,15 @@ from . import bytecode as bc
 
 
 class CodeGenerator:
-    def __init__(self):
+    def __init__(self, symbol_table=None):
         self.program = bc.ProgramCode()
         self.current: bc.FunctionCode = None
-        self._locals: set = set()      # 当前函数可见的局部变量名
+        self._locals: set = set()      # 当前函数可见的局部变量名（未遮蔽时的原名）
+        self._frame_names: dict = {}   # 符号 id -> 帧内存储名（遮蔽变量会被改名）
+        self._is_main = False
         self._break_stack = []          # 循环 break 回填栈
         self._continue_stack = []       # 循环 continue 回填栈
+        self._symbol_table = symbol_table
 
     # ------------------------------------------------------------------
     # 入口
@@ -36,15 +39,17 @@ class CodeGenerator:
         main.is_main = True
         self.program.main = main
         self.current = main
+        self._is_main = True
         self._locals = set()
-        # 全局变量：顶层 var 声明
+        # 全局变量：顶层 var 声明；函数名也挂到全局
         for decl in program.declarations:
             if isinstance(decl, ast.VarDecl):
                 self._locals.add(decl.name)
             elif isinstance(decl, ast.FunctionDecl):
                 self._locals.add(decl.name)
         self.program.global_names = sorted(self._locals)
-
+        # 依据语义阶段的符号绑定，为顶层遮蔽变量分配独立帧槽名
+        self._frame_names = self._build_frame_names(program, None)
         # 2) 先注册所有函数（生成各自 FunctionCode），支持互相调用
         for decl in program.declarations:
             if isinstance(decl, ast.FunctionDecl):
@@ -62,18 +67,99 @@ class CodeGenerator:
         self._optimize(main)
         return self.program
 
+    def _build_frame_names(self, program: ast.Program, fn) -> dict:
+        """构建符号 id -> 帧内存储名的映射。
+
+        语义分析建立的是块作用域：同名变量在嵌套块里是**不同**的符号；
+        而 VM 一个调用帧只有一张局部变量表。为让块内遮蔽变量不覆盖外层变量，
+        依据语义阶段的作用域链，给"被遮蔽"的变量分配带后缀的独立帧槽名；
+        未遮蔽的变量沿用原名，保持全局变量名、调试快照与既有行为稳定。
+        """
+        table = self._symbol_table
+        names = {}
+        if table is None:
+            return names
+
+        # 确定本帧对应的作用域子树根
+        if fn is None:
+            # main 帧：全局作用域（顶层块直接挂在全局作用域下）
+            root = table.global_scope
+            # 全局函数名占用原名槽位
+            reserved = {d.name for d in program.declarations if isinstance(d, ast.FunctionDecl)}
+        else:
+            # 用户函数帧：找到该函数作用域
+            root = None
+            for sc in table.scopes:
+                if sc.scope_type == sym.SCOPE_FUNCTION and sc.name == fn.name:
+                    root = sc
+                    break
+            if root is None:
+                return names
+            reserved = set(fn.params)
+
+        # 收集根作用域子树内的变量/形参符号（深度优先，外层符号先于内层）
+        symbols = []
+
+        def walk_scope(sc):
+            for s in sc.symbols.values():
+                if s.kind in (sym.KIND_VARIABLE, sym.KIND_PARAMETER):
+                    symbols.append(s)
+            for child in sc.children:
+                walk_scope(child)
+
+        walk_scope(root)
+
+        used = set(reserved)
+        shadow_count = {}
+        for s in symbols:
+            # 沿父作用域链查找：是否在**本帧子树内**已有同名变量/形参（有则本符号是遮蔽者）。
+            # 根作用域本身（函数作用域/全局作用域）是本帧边界：
+            # 对函数帧，根之外的全局作用域属于另一个帧，不算遮蔽。
+            shadows = False
+            outer = s.scope.parent
+            while outer is not None and outer is not root.parent:
+                other = outer.symbols.get(s.name)
+                if other is not None and other.kind in (sym.KIND_VARIABLE, sym.KIND_PARAMETER):
+                    shadows = True
+                    break
+                outer = outer.parent
+            if not shadows:
+                names[id(s)] = s.name
+                used.add(s.name)
+            else:
+                shadow_count[s.name] = shadow_count.get(s.name, 0) + 1
+                uniq = f"{s.name}__sh{shadow_count[s.name]}"
+                while uniq in used:
+                    shadow_count[s.name] += 1
+                    uniq = f"{s.name}__sh{shadow_count[s.name]}"
+                names[id(s)] = uniq
+                used.add(uniq)
+        return names
+
     def _compile_function(self, fn: ast.FunctionDecl):
         fc = bc.FunctionCode(fn.name, len(fn.params), fn.params)
         self.program.add_function(fc)
         prev, prev_locals = self.current, self._locals
+        prev_frame, prev_main = self._frame_names, self._is_main
         self.current = fc
+        self._is_main = False
         self._locals = set(fn.params)
         # 收集函数体内（不含嵌套函数）的局部变量
         self._collect_locals(fn.body)
+        # 依据符号绑定，为遮蔽形参/外层的块级变量分配独立帧槽名
+        self._frame_names = self._build_frame_names(self.program, fn)
         self._stmt(fn.body)
         self.current.emit(bc.OP_RETURN_NONE, None, fn.line)
         self.current, self._locals = prev, prev_locals
+        self._frame_names, self._is_main = prev_frame, prev_main
         return fc
+
+    def _frame_name_of(self, node):
+        """标识符节点在当前帧里的存储名（遮蔽变量用唯一名）。"""
+        s = getattr(node, "symbol", None)
+        if s is not None and id(s) in self._frame_names:
+            return self._frame_names[id(s)]
+        return node.name
 
     def _collect_locals(self, block: ast.Block):
         for s in block.statements:
@@ -105,7 +191,7 @@ class CodeGenerator:
                 self._expr(s.initializer)
             else:
                 self._emit(bc.OP_LOAD_CONST, None, s.line)
-            self._store_name(s.name, s.line)
+            self._store_frame_symbol(s.symbol, s.name, s.line)
         elif isinstance(s, ast.AssignStmt):
             self._assign(s)
         elif isinstance(s, ast.ExprStmt):
@@ -195,7 +281,7 @@ class CodeGenerator:
     def _assign(self, s: ast.AssignStmt):
         op = s.op
         if isinstance(s.target, ast.Identifier):
-            name = s.target.name
+            name = self._frame_name_of(s.target)
             if op == "=":
                 self._expr(s.value)
                 self._store_name(name, s.line)
@@ -241,7 +327,7 @@ class CodeGenerator:
             idx = self.current.add_const(None)
             self._emit(bc.OP_LOAD_CONST, idx, e.line)
         elif isinstance(e, ast.Identifier):
-            self._load_name(e.name, e.line)
+            self._load_name(self._frame_name_of(e), e.line)
         elif isinstance(e, ast.UnaryExpr):
             self._expr(e.operand)
             self._emit(bc.OP_UNARY, e.op, e.line)
@@ -285,14 +371,13 @@ class CodeGenerator:
 
     def _call(self, e: ast.CallExpr):
         if isinstance(e.callee, ast.Identifier):
-            name = e.callee.name
             s = e.callee.symbol
             if s is not None and s.kind == sym.KIND_BUILTIN:
-                self._emit(bc.OP_LOAD_BUILTIN, name, e.line)
+                self._emit(bc.OP_LOAD_BUILTIN, s.name, e.line)
             elif s is not None and s.kind == sym.KIND_FUNCTION:
-                self._emit(bc.OP_LOAD_FUNC, name, e.line)
+                self._emit(bc.OP_LOAD_FUNC, s.name, e.line)
             else:
-                self._load_name(name, e.line)
+                self._load_name(self._frame_name_of(e.callee), e.line)
         else:
             self._expr(e.callee)
         for a in e.args:
@@ -302,8 +387,18 @@ class CodeGenerator:
     # ------------------------------------------------------------------
     # 名字的加载/存储
     # ------------------------------------------------------------------
+    def _store_frame_symbol(self, symbol, fallback_name, line):
+        """变量声明存储：遮蔽变量写入独立帧槽。"""
+        name = self._frame_names.get(id(symbol), fallback_name) if symbol is not None else fallback_name
+        self._store_name(name, line)
+
     def _is_local(self, name) -> bool:
-        return name in self._locals
+        # 帧槽名形如 x__sh1，其原名 x 在 _locals 中
+        if name in self._locals:
+            return True
+        if "__sh" in name and name.split("__sh")[0] in self._locals:
+            return True
+        return False
 
     def _load_name(self, name, line):
         if self._is_local(name):

@@ -93,7 +93,7 @@ def compile_source(source: str, stop_on_error=True) -> CompileResult:
         return result
 
     # 4) 字节码生成 + 优化
-    gen = codegen_mod.CodeGenerator()
+    gen = codegen_mod.CodeGenerator(analyzer.symbols)
     bytecode = gen.generate(ast)
     result.bytecode = bytecode
     result.stage = "compiled"

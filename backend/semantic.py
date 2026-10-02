@@ -25,8 +25,8 @@ from .diagnostics import (
 BUILTIN_SIGNATURES = {
     "print": None, "len": 1, "push": 2, "pop": 1, "type": 1,
     "str": 1, "int": 1, "float": 1, "range": None, "abs": 1,
-    "min": 2, "max": 2, "sqrt": 1, "floor": 1, "ceil": 1,
-    "round": None, "input": 0, "time": 0, "random": 0, "exit": 0,
+    "min": None, "max": None, "sqrt": 1, "floor": 1, "ceil": 1,
+    "round": None, "input": 0, "time": 0, "random": 0, "exit": None,
 }
 
 # 运算符返回类型表（用于简单的类型推断）
@@ -146,7 +146,12 @@ class SemanticAnalyzer:
         elif isinstance(stmt, ast.AssignStmt):
             self._assign(stmt)
         elif isinstance(stmt, ast.ExprStmt):
-            self._expr(stmt.expr)
+            # 语法上赋值语句会被包成 ExprStmt(AssignStmt)，这里同样要走赋值分析，
+            # 否则赋值目标无法绑定符号、也漏掉了未定义/常量赋值检查。
+            if isinstance(stmt.expr, ast.AssignStmt):
+                self._assign(stmt.expr)
+            else:
+                self._expr(stmt.expr)
         elif isinstance(stmt, ast.PrintStmt):
             for a in stmt.args:
                 self._expr(a)
@@ -167,7 +172,10 @@ class SemanticAnalyzer:
             if stmt.condition:
                 self._expr(stmt.condition)
             if stmt.increment:
-                self._expr(stmt.increment)
+                if isinstance(stmt.increment, ast.AssignStmt):
+                    self._assign(stmt.increment)
+                else:
+                    self._expr(stmt.increment)
             self.loop_depth += 1
             self._analyze_block(stmt.body)
             self.loop_depth -= 1

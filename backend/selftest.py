@@ -19,6 +19,7 @@ from . import profiler as profiler_mod
 from . import storage
 from . import memory_model
 from . import diagnostics as diag
+from . import transpiler as transpiler_mod
 
 
 _RESULTS = []
@@ -49,6 +50,7 @@ def run_all():
     _test_functions_recursion()
     _test_control_flow()
     _test_lists()
+    _test_transpiler()
     _test_runtime_errors()
     _test_debugger()
     _test_profiler()
@@ -134,6 +136,96 @@ def _test_lists():
     out = _run(src)
     ok = out.get("ok") and out["output"] == ["4 99 4"]
     _check("解释器：列表构建/下标/len/push", ok, str(out.get("output")))
+
+
+def _vm_outputs(source, inputs=None):
+    """跑一遍 MiniLang VM，返回输出行列表。"""
+    res = compiler.compile_source(source)
+    if not res.success:
+        return None
+    vm = vm_mod.VM(res.bytecode, res.source_lines)
+    if inputs:
+        vm.input_queue = list(inputs)
+    vm.start()
+    vm.run()
+    if vm.error:
+        return None
+    return list(vm.output)
+
+
+def _py_outputs(code, inputs=None):
+    """执行转译得到的 Python 源码，返回 print 输出行列表。"""
+    import subprocess
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+        f.write(code)
+        path = f.name
+    try:
+        p = subprocess.run(["python3", path], capture_output=True, text=True,
+                           timeout=15, input="\n".join(inputs) if inputs else None)
+    except Exception:
+        return None
+    finally:
+        os.unlink(path)
+    if p.returncode != 0:
+        return None
+    lines = p.stdout.split("\n")
+    return lines[:-1] if lines and lines[-1] == "" else lines
+
+
+def _test_transpiler():
+    # 1) 语法错误：不产出目标代码，并带回明确诊断
+    bad = transpiler_mod.transpile_source("var x = ;")
+    ok_err = (not bad["ok"]) and bad["python"] == "" and bad["error_count"] >= 1
+    _check("转译器：语法错误时不生成 Python 且给出诊断", ok_err)
+
+    # 语义错误：未定义名字同样停止转译
+    bad2 = transpiler_mod.transpile_source("print(missing_name);")
+    ok_err2 = (not bad2["ok"]) and bad2["python"] == ""
+    _check("转译器：语义错误时不生成 Python", ok_err2)
+
+    # 2) 产物是合法 Python（内部 compile 自检 + 实际执行）
+    cases = [
+        ("递归",
+         "func fib(n) { if (n < 2) { return n; } return fib(n-1) + fib(n-2); }\nprint(fib(10));",
+         None),
+        ("列表+for 循环",
+         "var a = [1, 2, 3];\npush(a, 4);\nvar s = 0;\n"
+         "for (var i = 0; i < len(a); i = i + 1) { s = s + a[i]; }\nprint(s, a);",
+         None),
+        ("break/continue",
+         "var t = 0;\nfor (var k = 0; k < 10; k = k + 1) {"
+         "if (k == 2) { continue; } if (k == 6) { break; } t = t + k; }\nprint(t);",
+         None),
+        ("块作用域遮蔽",
+         "var x = 1;\n{ var x = 2; print(x); }\nprint(x);",
+         None),
+        ("函数内改全局",
+         "var c = 0;\nfunc inc() { c = c + 1; }\ninc(); inc();\nprint(c);",
+         None),
+        ("真值与短路",
+         'if (0) { print("A"); } else { print("B"); }\nprint(1 && 2, 0 || "fb");',
+         None),
+        ("字符串与浮点",
+         'print("a" + "b", 3.0 / 2.0, type(1), type(1.0));',
+         None),
+        ("内置 input",
+         'var n = input();\nprint("hi", n);',
+         ["Tom"]),
+    ]
+    all_ok = True
+    detail = ""
+    for name, src, inputs in cases:
+        tr = transpiler_mod.transpile_source(src)
+        if not tr["ok"]:
+            all_ok = False; detail = f"{name} 转译失败"; break
+        vm_lines = _vm_outputs(src, inputs)
+        py_lines = _py_outputs(tr["python"], inputs)
+        if vm_lines is None or py_lines is None or vm_lines != py_lines:
+            all_ok = False
+            detail = f"{name}: VM={vm_lines} PY={py_lines}"
+            break
+    _check("转译器：产物语义与 VM 等价且可直接运行", all_ok, detail)
 
 
 def _test_runtime_errors():

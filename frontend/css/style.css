@@ -427,6 +427,27 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .output-console { background: #0d1117; color: #e6edf3; font-family: var(--mono); font-size: 13px; border-radius: var(--radius); padding: 14px; min-height: 120px; max-height: 320px; overflow: auto; white-space: pre-wrap; }
 .output-console .ln-err { color: #f85149; }
 .output-console .ln-out { color: #a5d6ff; }
+
+/* ---------- MiniLang -> Python 转译页 ---------- */
+.trans-grid { align-items: start; }
+.pane-head {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  font-weight: 600; font-size: 13px;
+}
+.pane-head .pane-title { color: var(--text); }
+.dot-lang {
+  display: inline-grid; place-items: center; width: 26px; height: 20px;
+  border-radius: 5px; font-size: 10.5px; font-weight: 700; font-family: var(--mono);
+  color: #fff; letter-spacing: .3px;
+}
+.dot-lang.ml { background: linear-gradient(135deg, var(--primary), var(--accent)); }
+.dot-lang.py { background: linear-gradient(135deg, #2f6feb, #16a34a); }
+.code-out {
+  margin: 0; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 14px; min-height: 460px; max-height: 620px;
+  overflow: auto; font-family: var(--mono); font-size: 13px; line-height: 20px;
+  white-space: pre; tab-size: 4; color: var(--text);
+}
 input[type="text"], input[type="number"], select, textarea.plain {
   font-family: inherit; font-size: 13px; padding: 7px 10px;
   border: 1px solid var(--border-strong); border-radius: var(--radius-sm);

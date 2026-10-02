@@ -158,6 +158,11 @@ class Handler(BaseHTTPRequestHandler):
             out = svc.run(body.get("source", ""), opts)
             return self._json(200, {"ok": True, "result": out})
 
+        # ---- MiniLang -> Python 转译 ----
+        if path == "/api/transpile" and method == "POST":
+            out = svc.transpile_python(body.get("source", ""))
+            return self._json(200, {"ok": True, "result": out})
+
         # ---- 调试 ----
         if path == "/api/debug/start" and method == "POST":
             state = svc.debug_start(body.get("source", ""), body.get("breakpoints", []),

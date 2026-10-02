@@ -27,6 +27,7 @@ from . import debugger as debugger_mod
 from . import profiler as profiler_mod
 from . import diagnostics as diag
 from . import memory_model
+from . import transpiler as transpiler_mod
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +253,10 @@ class Service:
     # ==================================================================
     # 运行（普通 / 性能剖析）
     # ==================================================================
+    def transpile_python(self, source):
+        """把 MiniLang 源码转译为语义等价、可直接运行的 Python。"""
+        return transpiler_mod.transpile_source(source)
+
     def run(self, source, options=None):
         options = options or {}
         result = compiler_mod.compile_source(source)
